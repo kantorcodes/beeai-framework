@@ -119,9 +119,31 @@ class HOLGuardMiddleware(RunMiddlewareProtocol):
             await process.communicate()
             return False, f"HOL Guard timed out after {self.timeout:g}s"
 
-        if process.returncode == 0:
-            return True, "allow"
+        if process.returncode != 0:
+            return False, self._decision_reason(stdout=stdout, stderr=stderr, returncode=process.returncode)
 
+        try:
+            decision = json.loads(stdout.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return False, "HOL Guard returned invalid JSON"
+        if not isinstance(decision, dict):
+            return False, "HOL Guard returned no decision object"
+
+        hook = decision.get("hookSpecificOutput")
+        code = decision.get("reason_code")
+        authorized_reason = isinstance(code, str) and (
+            code in {"native_policy_allow", "native_custom_mcp_tool_allow"}
+            or code.startswith("native_exact_")
+        )
+        if (
+            decision.get("policy_action") == "allow"
+            and decision.get("continue") is not False
+            and isinstance(hook, dict)
+            and hook.get("hookEventName") == "PreToolUse"
+            and hook.get("permissionDecision") == "allow"
+            and authorized_reason
+        ):
+            return True, "allow"
         return False, self._decision_reason(stdout=stdout, stderr=stderr, returncode=process.returncode)
 
     @staticmethod
